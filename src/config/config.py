@@ -1,3 +1,4 @@
+import asyncio
 import os
 from contextlib import asynccontextmanager
 
@@ -52,6 +53,9 @@ MINIO_SECRET_KEY = os.getenv("MINIO_SECRET_KEY", "minioadmin")
 MINIO_BUCKET = os.getenv("MINIO_BUCKET", "documents")
 MINIO_SECURE = os.getenv("MINIO_SECURE", "false").lower() in {"true", "1", "yes"}
 
+# Largest accepted upload, in bytes (default 25 MB).
+MAX_UPLOAD_BYTES = int(os.getenv("MAX_UPLOAD_BYTES", str(25 * 1024 * 1024)))
+
 # Redis settings (ARQ task queue broker)
 REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
 REDIS_PORT = int(os.getenv("REDIS_PORT", "6379"))
@@ -60,6 +64,8 @@ REDIS_DB = int(os.getenv("REDIS_DB", "0"))
 # ARQ worker settings
 ARQ_MAX_JOBS = int(os.getenv("ARQ_MAX_JOBS", "5"))
 ARQ_JOB_TIMEOUT = int(os.getenv("ARQ_JOB_TIMEOUT", "600"))
+# Total attempts per ingestion job (first try + retries) for transient errors.
+ARQ_MAX_TRIES = int(os.getenv("ARQ_MAX_TRIES", "3"))
 
 # Embedding vector dimension — must match whatever EMBEDDING_FALLBACK_CHAIN's
 # first entry actually produces. Defaults to 1536 for OpenAI's
@@ -251,6 +257,16 @@ async def set_environment(app: FastAPI):
             await connection.execute(
                 "ALTER TABLE documents ADD COLUMN IF NOT EXISTS failure_reason TEXT"
             )
+            # SHA-256 of the file bytes, used to skip duplicate uploads.
+            await connection.execute(
+                "ALTER TABLE documents ADD COLUMN IF NOT EXISTS content_hash TEXT"
+            )
+            await connection.execute(
+                """
+                CREATE INDEX IF NOT EXISTS documents_user_session_hash_idx
+                    ON documents (user_id, session_id, content_hash)
+                """
+            )
 
             # --- RAG: chunk persistence table (Milvus fallback) ---
             await connection.execute(
@@ -291,10 +307,29 @@ async def set_environment(app: FastAPI):
         app.state.milvus = milvus_client
         logger.info("Milvus ready: collection=%s", MILVUS_COLLECTION_NAME)
 
+        # ------------------------------------------------------------------ #
+        # Redis pool (ARQ job queue) — created once, shared by all requests  #
+        # ------------------------------------------------------------------ #
+        # Imported here: arq_config imports this module at load time.
+        from src.config.arq_config import get_redis_pool
+        from src.storage.minio_client import get_minio_client
+
+        app.state.redis = await get_redis_pool()
+
+        # ------------------------------------------------------------------ #
+        # MinIO bucket — ensured once instead of on every upload             #
+        # ------------------------------------------------------------------ #
+        await asyncio.to_thread(get_minio_client().ensure_bucket, MINIO_BUCKET)
+        logger.info("MinIO bucket ready: %s", MINIO_BUCKET)
+
         logger.info("Application environment initialized")
         yield
 
     finally:
+        redis_pool = getattr(app.state, "redis", None)
+        if redis_pool is not None:
+            logger.info("Closing Redis pool")
+            await redis_pool.aclose()
         logger.info("Closing database pool")
         await app.state.db.close()
         logger.info("Application shutdown complete")

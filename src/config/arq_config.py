@@ -3,15 +3,13 @@
 This module defines the ARQ worker settings (Redis connection, concurrency,
 timeouts) and provides a Redis pool factory for the upload API to enqueue jobs.
 """
-import os
-from functools import lru_cache
-
 from arq import create_pool
 from arq.connections import RedisSettings, ArqRedis
 
 from src.config.config import (
     ARQ_JOB_TIMEOUT,
     ARQ_MAX_JOBS,
+    ARQ_MAX_TRIES,
     REDIS_DB,
     REDIS_HOST,
     REDIS_PORT,
@@ -81,10 +79,10 @@ class WorkerSettings:
     # Job timeout: seconds before a job is killed (embedding can be slow)
     job_timeout = ARQ_JOB_TIMEOUT
 
-    # Retry settings: exponential backoff for transient failures
-    max_tries = 3
-    retry_backoff = True
-    retry_backoff_base = 2  # seconds
+    # Total attempts per job. process_document raises arq.Retry with an
+    # exponential defer for transient errors and stops retrying itself on the
+    # last attempt (see src/workers/tasks.py).
+    max_tries = ARQ_MAX_TRIES
 
     # Worker health check interval
     health_check_interval = 60

@@ -64,6 +64,9 @@ class MinioClient:
     def upload_file(self, bucket: str, object_name: str, data: bytes) -> str:
         """Upload file bytes to MinIO.
 
+        The bucket must already exist: the API ensures it once at startup
+        (see set_environment in src/config/config.py).
+
         Args:
             bucket: Bucket name
             object_name: Object key (e.g., "document_id.pdf")
@@ -76,7 +79,6 @@ class MinioClient:
             RuntimeError: If upload fails
         """
         try:
-            self.ensure_bucket(bucket)
             data_stream = io.BytesIO(data)
             self.client.put_object(
                 bucket_name=bucket,

@@ -2,21 +2,25 @@
 Embedding service — embeds text chunks with OpenAI and writes them to Milvus
 and PostgreSQL.
 
-Dual-write strategy:
-  1. Embed all chunks in a single batched OpenAI API call.
-  2. Bulk-insert chunk text rows into the `document_chunks` Postgres table.
-  3. Upsert vector rows into the Milvus `doc_chunks` collection.
-  4. Return the count of chunks stored.
+Writes are idempotent so a retried job never duplicates chunks:
+  1. Embed all chunks (batched by the embedding client).
+  2. In one Postgres transaction: delete this document's old chunk rows, then
+     insert the new ones.
+  3. In Milvus: delete this document's old vectors, then upsert the new ones.
 
-If Postgres write succeeds but Milvus upsert fails, we log the error and re-raise
-so the ingestor can mark the document as 'failed'.
+Chunk IDs are deterministic (``{document_id}:{chunk_index}``), so the same
+chunk always maps to the same primary key in both stores.
+
+Milvus calls are synchronous, so they run in a worker thread to keep the
+event loop free.
 """
-import uuid
+import asyncio
 
 from pymilvus import MilvusClient
 
 from src.config.config import MILVUS_COLLECTION_NAME
 from src.documents.chunker import DocumentChunk
+from src.documents.filters import document_filter
 from src.logger import get_logger
 from src.services.embedding_service import embedding_service
 
@@ -29,6 +33,11 @@ _TEXT_MAX_LEN = 4096
 def _truncate(text: str, max_len: int = _TEXT_MAX_LEN) -> str:
     """Truncate text to fit within the Milvus VARCHAR field limit."""
     return text[:max_len] if len(text) > max_len else text
+
+
+def chunk_id(document_id: str, chunk_index: int) -> str:
+    """Deterministic primary key for a chunk (fits Milvus VARCHAR(64))."""
+    return f"{document_id}:{chunk_index}"
 
 
 async def embed_and_store(
@@ -85,7 +94,7 @@ async def embed_and_store(
     # ------------------------------------------------------------------
     # 2. Bulk-insert into Postgres document_chunks
     # ------------------------------------------------------------------
-    chunk_ids = [str(uuid.uuid4()) for _ in chunks]
+    chunk_ids = [chunk_id(document_id, chunk.chunk_index) for chunk in chunks]
 
     pg_rows = [
         (
@@ -102,17 +111,25 @@ async def embed_and_store(
 
     try:
         async with db.acquire() as conn:
-            await conn.executemany(
-                """
-                INSERT INTO document_chunks
-                    (id, document_id, user_id, session_id, chunk_index, chunk_text, page)
-                VALUES ($1, $2, $3, $4, $5, $6, $7)
-                ON CONFLICT (id) DO NOTHING
-                """,
-                pg_rows,
-            )
+            async with conn.transaction():
+                # Remove rows from any earlier, partial attempt first.
+                await conn.execute(
+                    "DELETE FROM document_chunks WHERE document_id = $1",
+                    document_id,
+                )
+                await conn.executemany(
+                    """
+                    INSERT INTO document_chunks
+                        (id, document_id, user_id, session_id, chunk_index, chunk_text, page)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7)
+                    ON CONFLICT (id) DO UPDATE SET
+                        chunk_text = EXCLUDED.chunk_text,
+                        page = EXCLUDED.page
+                    """,
+                    pg_rows,
+                )
         logger.debug(
-            "Postgres chunk rows inserted: document_id=%s count=%s",
+            "Postgres chunk rows replaced: document_id=%s count=%s",
             document_id,
             len(pg_rows),
         )
@@ -141,7 +158,14 @@ async def embed_and_store(
     ]
 
     try:
-        milvus_client.upsert(
+        # Remove vectors from any earlier, partial attempt, then upsert.
+        await asyncio.to_thread(
+            milvus_client.delete,
+            collection_name=MILVUS_COLLECTION_NAME,
+            filter=document_filter(document_id),
+        )
+        await asyncio.to_thread(
+            milvus_client.upsert,
             collection_name=MILVUS_COLLECTION_NAME,
             data=milvus_rows,
         )
@@ -152,7 +176,7 @@ async def embed_and_store(
         )
     except Exception as exc:
         logger.exception(
-            "Milvus upsert failed: document_id=%s — chunks are safe in Postgres",
+            "Milvus upsert failed: document_id=%s — job will retry",
             document_id,
         )
         raise RuntimeError(f"Milvus upsert failed: {exc}") from exc
