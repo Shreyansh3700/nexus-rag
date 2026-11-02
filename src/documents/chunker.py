@@ -62,29 +62,3 @@ def chunk_units(units) -> list[DocumentChunk]:
         round(sum(len(chunk.text) for chunk in chunks) / len(chunks)) if chunks else 0,
     )
     return chunks
-
-
-def chunk_text(text: str) -> list[str]:
-    """Split *text* into a list of overlapping text chunks.
-
-    Args:
-        text: Plain text string to split (may be empty).
-
-    Returns:
-        List of non-empty string chunks.  Empty list if *text* is blank.
-    """
-    if not text or not text.strip():
-        logger.debug("chunk_text called with empty text, returning []")
-        return []
-
-    chunks = _splitter.split_text(text)
-    # Filter out any whitespace-only chunks that the splitter may produce
-    chunks = [c for c in chunks if c.strip()]
-
-    logger.debug(
-        "Chunked text: input_chars=%s chunks=%s avg_chunk_chars=%s",
-        len(text),
-        len(chunks),
-        round(sum(len(c) for c in chunks) / len(chunks)) if chunks else 0,
-    )
-    return chunks

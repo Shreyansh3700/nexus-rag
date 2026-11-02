@@ -7,9 +7,8 @@ export interface StreamCallbacks {
 }
 
 /**
- * Streams a chat answer token-by-token via POST /chat/stream, mirroring
- * frontend.py's stream_chat_response: falls back to the "done" event's
- * final answer if no token events arrived at all.
+ * Streams a chat answer token-by-token via POST /chat/stream. Falls back to
+ * the "done" event's final answer if no token events arrived at all.
  */
 export async function streamChat(
   token: string,

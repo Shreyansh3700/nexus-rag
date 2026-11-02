@@ -1,5 +1,5 @@
-# Full stack: FastAPI chatbot + React frontend + Milvus (etcd + MinIO + Milvus Standalone).
-# PostgreSQL runs on the host machine — reachable via host.docker.internal.
+# Full stack: PostgreSQL + Redis + Milvus (etcd + MinIO + Milvus Standalone)
+# + FastAPI API + ARQ worker + React frontend.
 #
 # Usage:
 #   docker compose up -d --build       # first run / after code changes
@@ -11,6 +11,26 @@
 # The React frontend is available at: http://localhost:5173
 
 services:
+  postgres:
+    container_name: chatbot-postgres
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${PG_DATABASE:-nexus_rag}
+      POSTGRES_USER: ${PG_USER:-postgres}
+      POSTGRES_PASSWORD: ${PG_PASSWORD:-postgres}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - milvus-net
+
   redis:
     container_name: chatbot-redis
     image: redis:7-alpine
@@ -134,21 +154,24 @@ services:
       MILVUS_HOST: milvus-standalone
       MINIO_ENDPOINT: minio:9000
       REDIS_HOST: redis
-      # Postgres runs on the host machine, not in a container — "localhost"
-      # inside the container would resolve to the container itself.
-      PG_HOST: host.docker.internal
+      PG_HOST: postgres
+      PG_PORT: "5432"
+      PG_DATABASE: ${PG_DATABASE:-nexus_rag}
+      PG_USER: ${PG_USER:-postgres}
+      PG_PASSWORD: ${PG_PASSWORD:-postgres}
     ports:
       - "8000:8000"
     depends_on:
+      postgres:
+        condition: service_healthy
       redis:
         condition: service_healthy
       milvus:
         condition: service_healthy
+      minio:
+        condition: service_healthy
     networks:
       - milvus-net
-    # host.docker.internal lets the container reach Postgres on the host machine
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
 
   worker:
     container_name: chatbot-worker
@@ -163,18 +186,25 @@ services:
       MILVUS_HOST: milvus-standalone
       MINIO_ENDPOINT: minio:9000
       REDIS_HOST: redis
-      PG_HOST: host.docker.internal
+      PG_HOST: postgres
+      PG_PORT: "5432"
+      PG_DATABASE: ${PG_DATABASE:-nexus_rag}
+      PG_USER: ${PG_USER:-postgres}
+      PG_PASSWORD: ${PG_PASSWORD:-postgres}
     depends_on:
+      postgres:
+        condition: service_healthy
       redis:
         condition: service_healthy
       milvus:
         condition: service_healthy
       minio:
         condition: service_healthy
+      # The API creates the Postgres schema and Milvus collection on startup.
+      chatbot:
+        condition: service_started
     networks:
       - milvus-net
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
 
   frontend:
     container_name: chatbot-frontend
@@ -205,6 +235,7 @@ networks:
     driver: bridge
 
 volumes:
+  postgres_data:
   redis_data:
   etcd_data:
   minio_data:

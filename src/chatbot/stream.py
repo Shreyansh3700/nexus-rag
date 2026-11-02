@@ -1,13 +1,19 @@
+"""Streaming chat: chain.astream_events, sent to the client as SSE events.
+
+Events:
+    event: token   data: {"token": "..."}            — one per non-empty chunk
+    event: done    data: {model, tokens, latency, answer, sources}
+
+Shared turn logic (history, ownership, title, retrieval, citations, saving)
+lives in src/chatbot/turn.py.
+"""
 import json
 import time
 from typing import Any, AsyncGenerator
 
 from langchain_core.messages import AIMessage
 
-from src.database.exceptions import SessionAccessError
-from src.database.fetch_data import get_session_context_from_db
-from src.database.update_data import update_session_history
-from src.documents.retriever import cited_sources, retrieve_context
+from src.chatbot.turn import prepare_turn, save_turn, select_cited_sources
 from src.logger import get_logger
 
 logger = get_logger(__name__)
@@ -46,73 +52,15 @@ async def stream_answer(
     milvus_client,
     session_context: dict | None = None,
 ) -> AsyncGenerator[str, None]:
-    if session_context is None:
-        logger.debug(
-            "Loading session context for stream chat: session_id=%s user_id=%s",
-            session_id,
-            user_id,
-        )
-        session_context = await get_session_context_from_db(
-            session_id=session_id,
-            user_id=user_id,
-            db=db,
-        )
-
-    if session_context["foreign"]:
-        raise SessionAccessError("Session does not belong to the current user")
-
-    history = session_context["history"]
-    logger.info(
-        "Starting streamed chat: session=%s user=%s exists=%s history_len=%s query_len=%s",
-        session_id,
-        user_id,
-        session_context["exists"],
-        len(history),
-        len(user_query),
+    turn = await prepare_turn(
+        session_id=session_id,
+        user_id=user_id,
+        user_query=user_query,
+        db=db,
+        title_chain=title_chain,
+        milvus_client=milvus_client,
+        session_context=session_context,
     )
-
-    # ------------------------------------------------------------------
-    # Generate session title for new sessions
-    # ------------------------------------------------------------------
-    title = None
-    if not session_context["exists"]:
-        logger.info("New session detected: session=%s user_id=%s", session_id, user_id)
-        title = await title_chain.ainvoke({"query": user_query})
-        title = str(title.content).strip() or "New Chat"
-        logger.info(
-            "Generated title for session=%s user_id=%s title=%r",
-            session_id,
-            user_id,
-            title,
-        )
-
-    # ------------------------------------------------------------------
-    # Retrieve RAG context (graceful fallback to "" on any error)
-    # ------------------------------------------------------------------
-    context_str = ""
-    sources: list[dict] = []
-    try:
-        retrieval = await retrieve_context(
-            query=user_query,
-            session_id=session_id,
-            user_id=user_id,
-            milvus_client=milvus_client,
-        )
-        context_str = retrieval.context
-        sources = retrieval.sources
-        logger.info(
-            "SOURCES-TRACE: after retrieve_context (stream): session_id=%s context_chars=%s "
-            "raw_sources_count=%s",
-            session_id,
-            len(context_str),
-            len(sources),
-        )
-    except Exception:
-        logger.warning(
-            "SOURCES-TRACE: retrieval failed — proceeding without RAG context: session_id=%s",
-            session_id,
-            exc_info=True,
-        )
 
     # ------------------------------------------------------------------
     # Stream the chain response
@@ -120,7 +68,6 @@ async def stream_answer(
     final_answer = ""
     saw_nonempty_chunk = False
     model_name = "unknown"
-    finish_reason = "unknown"
     total_tokens = 0
     latency = 0.0
     start_time = time.perf_counter()
@@ -145,14 +92,7 @@ async def stream_answer(
             return dict(source.response_metadata)
         return {}
 
-    async for event in chain.astream_events(
-        {
-            "chat_history": history,
-            "query": user_query,
-            "context": context_str,
-        },
-        version="v2",
-    ):
+    async for event in chain.astream_events(turn.chain_input(), version="v2"):
         event_type = event["event"]
 
         if event_type == "on_chat_model_stream":
@@ -204,23 +144,9 @@ async def stream_answer(
                 or model_metadata.get("model")
                 or "unknown"
             )
-            finish_reason = str(
-                model_metadata.get("finish_reason")
-                or event_metadata.get("finish_reason")
-                or "unknown"
-            )
 
     final_answer = final_answer.strip()
-    raw_sources_count = len(sources)
-    sources = cited_sources(final_answer, sources)
-    logger.info(
-        "SOURCES-TRACE: after cited_sources filter (stream): session_id=%s "
-        "raw_sources_count=%s cited_sources_count=%s answer_preview=%r",
-        session_id,
-        raw_sources_count,
-        len(sources),
-        _preview(final_answer, limit=300),
-    )
+    sources = select_cited_sources(turn, final_answer)
 
     if not final_answer:
         logger.warning(
@@ -251,22 +177,18 @@ async def stream_answer(
         },
     )
 
+    # Tokens were already sent, so a failed save cannot fail the request:
+    # log it and still send the final "done" event.
     try:
-        logger.info(
-            "SOURCES-TRACE: calling update_session_history (stream): session_id=%s "
-            "sources_being_persisted_count=%s",
+        saved = await save_turn(turn, final_ai_message, sources, db)
+    except Exception:
+        saved = False
+        logger.exception(
+            "Failed to persist streamed chat history: session=%s user_id=%s",
             session_id,
-            len(sources),
+            user_id,
         )
-        await update_session_history(
-            session_id=session_id,
-            user_id=user_id,
-            user_message=user_query,
-            ai_message=final_ai_message,
-            db=db,
-            title=title,
-            sources=sources,
-        )
+    if saved:
         logger.info(
             "Persisted streamed answer: session=%s user_id=%s model=%s tokens=%s latency=%s",
             session_id,
@@ -274,12 +196,6 @@ async def stream_answer(
             model_name,
             total_tokens,
             latency,
-        )
-    except Exception:
-        logger.exception(
-            "Failed to persist streamed chat history: session=%s user_id=%s",
-            session_id,
-            user_id,
         )
 
     yield (

@@ -44,3 +44,43 @@ class DocumentProcessingTests(unittest.TestCase):
     def test_parser_rejects_unknown_extension(self):
         with self.assertRaises(ValueError):
             parse_file("payload.exe", b"not executable")
+
+
+class IngestionIdempotencyTests(unittest.IsolatedAsyncioTestCase):
+    def test_chunk_ids_are_deterministic(self):
+        from src.documents.embedder import chunk_id
+
+        self.assertEqual(chunk_id("doc-1", 4), chunk_id("doc-1", 4))
+        self.assertEqual(chunk_id("doc-1", 4), "doc-1:4")
+        # Fits the Milvus VARCHAR(64) primary key for a UUID document id.
+        self.assertLessEqual(len(chunk_id("0" * 36, 999_999)), 64)
+
+    async def test_empty_document_is_a_permanent_error(self):
+        from src.documents.errors import PermanentIngestionError
+        from src.documents.ingestor import ingest_document
+
+        with self.assertRaises(PermanentIngestionError):
+            await ingest_document(
+                document_id="doc-1",
+                user_id="user-1",
+                session_id="session-1",
+                filename="blank.txt",
+                content=b"   \n  ",
+                db=None,
+                milvus_client=None,
+            )
+
+    async def test_corrupt_pdf_is_a_permanent_error(self):
+        from src.documents.errors import PermanentIngestionError
+        from src.documents.ingestor import ingest_document
+
+        with self.assertRaises(PermanentIngestionError):
+            await ingest_document(
+                document_id="doc-1",
+                user_id="user-1",
+                session_id="session-1",
+                filename="broken.pdf",
+                content=b"not really a pdf",
+                db=None,
+                milvus_client=None,
+            )

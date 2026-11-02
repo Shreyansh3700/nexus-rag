@@ -14,8 +14,7 @@ export type IngestionStatusMap = Record<string, IngestionStatus>
 
 /**
  * Uploads files, then polls each document's status until every one reaches
- * a terminal state (ready/failed) or POLL_TIMEOUT_MS elapses — mirrors
- * frontend.py's poll_ingestion_status.
+ * a terminal state (ready/failed) or POLL_TIMEOUT_MS elapses.
  */
 export async function uploadAndTrackDocuments(
   token: string,

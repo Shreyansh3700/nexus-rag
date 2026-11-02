@@ -16,7 +16,7 @@ configure_logging()
 logger = get_logger(__name__)
 
 app = FastAPI(
-    title="EndToEndChatBot",
+    title="nexus-rag",
     description="Complete Chatbot with persistent history and RAG",
     version="0.1.0",
     lifespan=set_environment,
@@ -46,7 +46,7 @@ app.include_router(documents_router)
 @app.get("/")
 async def index():
     logger.debug("Health check requested")
-    return {"service": "EndToEndChatBot", "status": "ok"}
+    return {"service": "nexus-rag", "status": "ok"}
 
 
 if __name__ == "__main__":

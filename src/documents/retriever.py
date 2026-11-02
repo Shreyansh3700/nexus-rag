@@ -1,6 +1,11 @@
-"""Hybrid document retrieval using Milvus dense vectors, BM25, and RRF."""
-from dataclasses import dataclass
+"""Hybrid document retrieval using Milvus dense vectors, BM25, and RRF.
+
+MilvusClient is synchronous, so every Milvus call runs in a worker thread
+(asyncio.to_thread) to keep the FastAPI event loop free.
+"""
+import asyncio
 import re
+from dataclasses import dataclass
 
 from pymilvus import AnnSearchRequest, MilvusClient, RRFRanker
 
@@ -14,6 +19,7 @@ from src.config.config import (
     RERANKER_TOP_K,
     RETRIEVAL_MAX_COSINE_DISTANCE,
 )
+from src.documents.filters import milvus_filter_value
 from src.documents.reranker import rerank_chunks
 from src.logger import get_logger
 from src.services.embedding_service import embedding_service
@@ -87,15 +93,10 @@ def _format_context(chunks: list[dict]) -> str:
     )
 
 
-def _filter_value(value: str) -> str:
-    """Escape a string used in a Milvus scalar filter."""
-    return value.replace("\\", "\\\\").replace('"', '\\"')
-
-
 def _scope_filter(user_id: str, session_id: str) -> str:
     return (
-        f'user_id == "{_filter_value(user_id)}" '
-        f'and session_id == "{_filter_value(session_id)}"'
+        f'user_id == "{milvus_filter_value(user_id)}" '
+        f'and session_id == "{milvus_filter_value(session_id)}"'
     )
 
 
@@ -172,7 +173,7 @@ async def retrieve_context(
 
     filter_expr = _scope_filter(user_id, session_id)
     try:
-        if not _has_chunks(milvus_client, filter_expr):
+        if not await asyncio.to_thread(_has_chunks, milvus_client, filter_expr):
             logger.info(
                 "SOURCES-TRACE: no indexed chunks for this session — sources will be empty: "
                 "user_id=%s session_id=%s",
@@ -194,7 +195,8 @@ async def retrieve_context(
         )
         query_vector = await embedding_service.aembed_query(query)
         retrieval_k = RERANKER_CANDIDATE_K if RERANKER_ENABLED else top_k
-        chunks = _hybrid_search(
+        chunks = await asyncio.to_thread(
+            _hybrid_search,
             milvus_client=milvus_client,
             query=query,
             query_vector=query_vector,

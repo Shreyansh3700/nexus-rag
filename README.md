@@ -1,6 +1,6 @@
 # nexus-rag
 
-EndToEndChatBot is a FastAPI-based chatbot application that uses LangChain and OpenAI to generate responses while keeping chat history in PostgreSQL for each authenticated user. It includes a full **RAG (Retrieval-Augmented Generation) pipeline** — upload documents to a session, and the chatbot will ground its answers using the most relevant chunks from those documents.
+nexus-rag is a FastAPI-based chatbot application that uses LangChain and OpenAI to generate responses while keeping chat history in PostgreSQL for each authenticated user. It includes a full **RAG (Retrieval-Augmented Generation) pipeline** — upload documents to a session, and the chatbot will ground its answers using the most relevant chunks from those documents.
 
 ## Features
 
@@ -14,6 +14,8 @@ EndToEndChatBot is a FastAPI-based chatbot application that uses LangChain and O
 - **Session-scoped retrieval**: only searches documents uploaded to the current session — no cross-session leakage
 - **Queue-based document ingestion**: upload returns instantly, processing happens asynchronously via ARQ workers
 - **Scalable worker architecture**: independent worker processes with retry logic and failure handling
+- **Idempotent ingestion**: deterministic chunk IDs and delete-then-insert writes, so a retried job never duplicates chunks
+- **Duplicate upload detection**: identical files (SHA-256) in the same session are not embedded twice
 - Docker support for containerized deployment
 
 ## Architecture
@@ -55,6 +57,11 @@ EndToEndChatBot is a FastAPI-based chatbot application that uses LangChain and O
 4. Worker calls existing parse → chunk → embed → store pipeline
 5. Status updates: queued → processing → ready/failed
 
+**Failure handling:**
+- Permanent errors (unsupported or corrupt file, no extractable text) mark the document `failed` at once, with a `failure_reason`.
+- Transient errors (OpenAI, Postgres, Milvus, MinIO) set the status back to `queued` with a "Retrying…" reason and retry with exponential backoff (2s, 4s, …) up to `ARQ_MAX_TRIES` attempts. After the last attempt the document is `failed`.
+- Chunk IDs are `{document_id}:{chunk_index}`, and each run deletes the document's old chunks before writing, so retries are safe.
+
 ## Tech Stack
 
 - Python 3.11
@@ -75,8 +82,7 @@ EndToEndChatBot is a FastAPI-based chatbot application that uses LangChain and O
 Before running the project, make sure you have:
 
 - Python 3.11+
-- PostgreSQL running and reachable
-- **Milvus Standalone** running (see Docker Compose section below)
+- Docker (PostgreSQL, Redis, Milvus, and MinIO all run from `docker-compose.yaml`)
 - An OpenAI API key for the backend model
 - A strong JWT secret for signing user tokens
 
@@ -111,7 +117,7 @@ EMBEDDING_DIM=1536
 
 PG_HOST=localhost
 PG_PORT=5432
-PG_DATABASE=LangchainDB
+PG_DATABASE=nexus_rag
 PG_USER=postgres
 PG_PASSWORD=postgres
 DB_POOL_SIZE=10
@@ -134,6 +140,9 @@ RERANKER_CANDIDATE_K=30
 RERANKER_TOP_K=5
 RERANKER_MAX_LENGTH=512
 
+# Largest accepted upload, in bytes (default 25 MB) — larger files get 413
+MAX_UPLOAD_BYTES=26214400
+
 # MinIO (object storage for uploaded documents)
 MINIO_ENDPOINT=localhost:9000
 MINIO_ACCESS_KEY=minioadmin
@@ -149,6 +158,7 @@ REDIS_DB=0
 # ARQ worker settings
 ARQ_MAX_JOBS=5
 ARQ_JOB_TIMEOUT=600
+ARQ_MAX_TRIES=3
 
 LOG_LEVEL=INFO
 ```
@@ -158,10 +168,11 @@ LOG_LEVEL=INFO
 1. **Start infrastructure services** (requires Docker):
 
 ```bash
-docker compose up -d redis milvus minio etcd
+docker compose up -d postgres redis milvus minio etcd
 ```
 
 This starts:
+- PostgreSQL on port `5432` (database `nexus_rag`, user/password `postgres` unless overridden in `.env`)
 - Redis (ARQ task queue broker) on port `6379`
 - etcd (Milvus dependency)
 - MinIO (object storage) on ports `9000` (API) and `9001` (console)
@@ -342,7 +353,7 @@ curl -H "Authorization: Bearer $TOKEN" \
 
 ## Docker
 
-Start the full stack (Milvus + etcd + MinIO + FastAPI + React frontend) with:
+Start the full stack (PostgreSQL + Redis + Milvus + etcd + MinIO + FastAPI + ARQ worker + React frontend) with:
 
 ```bash
 docker compose up -d --build
@@ -383,6 +394,8 @@ docker compose logs -f worker
   `RERANKER_TOP_K`, and sends only those chunks to the LLM. The model is
   downloaded when it is first used, so the first RAG request may take longer.
 - The streaming endpoint falls back to the final end-of-stream answer when a model emits empty chunks.
+- Uploading a file whose bytes already exist (and did not fail) in the same session returns the existing document with `"duplicate": true` instead of processing it again.
+- Deleting a document removes its Milvus vectors first. If that fails, the API returns `502` and keeps the document so the delete can be retried — deleted documents never keep answering questions.
 - Document ingestion is asynchronous — the upload endpoint returns `202 Accepted` immediately. Poll `GET /documents/{document_id}/status` to watch status change from `queued` → `processing` → `ready`/`failed`.
 
 
