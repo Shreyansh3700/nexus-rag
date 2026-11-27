@@ -6,14 +6,7 @@ timeouts) and provides a Redis pool factory for the upload API to enqueue jobs.
 from arq import create_pool
 from arq.connections import RedisSettings, ArqRedis
 
-from src.config.config import (
-    ARQ_JOB_TIMEOUT,
-    ARQ_MAX_JOBS,
-    ARQ_MAX_TRIES,
-    REDIS_DB,
-    REDIS_HOST,
-    REDIS_PORT,
-)
+from src.config.settings import settings
 from src.logger import get_logger
 
 logger = get_logger(__name__)
@@ -26,9 +19,9 @@ def get_redis_settings() -> RedisSettings:
         Configured RedisSettings instance for ARQ
     """
     return RedisSettings(
-        host=REDIS_HOST,
-        port=REDIS_PORT,
-        database=REDIS_DB,
+        host=settings.redis_host,
+        port=settings.redis_port,
+        database=settings.redis_db,
     )
 
 
@@ -44,7 +37,12 @@ async def get_redis_pool() -> ArqRedis:
     Raises:
         ConnectionError: If Redis is unreachable
     """
-    logger.debug("Creating Redis pool: host=%s port=%s db=%s", REDIS_HOST, REDIS_PORT, REDIS_DB)
+    logger.debug(
+        "Creating Redis pool: host=%s port=%s db=%s",
+        settings.redis_host,
+        settings.redis_port,
+        settings.redis_db,
+    )
     try:
         pool = await create_pool(get_redis_settings())
         logger.info("Redis pool created successfully")
@@ -74,15 +72,15 @@ class WorkerSettings:
     redis_settings = get_redis_settings()
 
     # Worker concurrency: number of jobs processed simultaneously
-    max_jobs = ARQ_MAX_JOBS
+    max_jobs = settings.arq_max_jobs
 
     # Job timeout: seconds before a job is killed (embedding can be slow)
-    job_timeout = ARQ_JOB_TIMEOUT
+    job_timeout = settings.arq_job_timeout
 
     # Total attempts per job. process_document raises arq.Retry with an
     # exponential defer for transient errors and stops retrying itself on the
     # last attempt (see src/workers/tasks.py).
-    max_tries = ARQ_MAX_TRIES
+    max_tries = settings.arq_max_tries
 
     # Worker health check interval
     health_check_interval = 60
@@ -96,8 +94,8 @@ class WorkerSettings:
 
 logger.info(
     "ARQ worker settings loaded: redis=%s:%s max_jobs=%s timeout=%s",
-    REDIS_HOST,
-    REDIS_PORT,
-    ARQ_MAX_JOBS,
-    ARQ_JOB_TIMEOUT,
+    settings.redis_host,
+    settings.redis_port,
+    settings.arq_max_jobs,
+    settings.arq_job_timeout,
 )

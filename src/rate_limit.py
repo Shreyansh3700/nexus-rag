@@ -9,11 +9,11 @@ from slowapi import Limiter
 from slowapi.util import get_remote_address
 
 from src.auth import _extract_bearer_token, decode_access_token
-from src.config.config import REDIS_DB, REDIS_HOST, REDIS_PORT
+from src.config.settings import settings
 
 limiter = Limiter(
     key_func=get_remote_address,
-    storage_uri=f"redis://{REDIS_HOST}:{REDIS_PORT}/{REDIS_DB}",
+    storage_uri=settings.redis_url,
 )
 
 

@@ -5,7 +5,8 @@ import tiktoken
 from src.logger import get_logger
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, get_buffer_string, trim_messages
 
-from src.config.config import MAX_CHAT_TOKENS, chat_model
+from src.config.config import chat_model
+from src.config.settings import settings
 from src.schema.models import Session, SessionMetaData
 
 logger = get_logger(__name__)
@@ -132,7 +133,7 @@ async def get_session_context_from_db(session_id: str, user_id: str, db) -> dict
     ]
     trimmed_history = trim_messages(
         history,
-        max_tokens=MAX_CHAT_TOKENS,
+        max_tokens=settings.max_chat_tokens,
         token_counter=_count_tokens,
         strategy="last",
         allow_partial=True,

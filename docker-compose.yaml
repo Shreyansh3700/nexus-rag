@@ -1,5 +1,5 @@
 # Full stack: PostgreSQL + Redis + Milvus (etcd + MinIO + Milvus Standalone)
-# + FastAPI API + ARQ worker + React frontend.
+# + FastAPI API + ARQ worker + reranker service + React frontend.
 #
 # Usage:
 #   docker compose up -d --build       # first run / after code changes
@@ -142,6 +142,32 @@ services:
     networks:
       - milvus-net
 
+  # Cross-encoder reranker in its own process and image (Dockerfile.reranker),
+  # so the API image does not contain torch. If it is down or slow, the API
+  # keeps the hybrid (RRF) order and still answers.
+  reranker:
+    container_name: chatbot-reranker
+    build:
+      context: .
+      dockerfile: Dockerfile.reranker
+    restart: unless-stopped
+    environment:
+      RERANKER_MODEL: ${RERANKER_MODEL:-cross-encoder/ms-marco-MiniLM-L6-v2}
+      RERANKER_MAX_LENGTH: ${RERANKER_MAX_LENGTH:-512}
+      RERANKER_MAX_CONCURRENCY: ${RERANKER_MAX_CONCURRENCY:-1}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    volumes:
+      - reranker_models:/models
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')"]
+      interval: 15s
+      timeout: 5s
+      # The first start downloads the model.
+      start_period: 120s
+      retries: 3
+    networks:
+      - milvus-net
+
   chatbot:
     container_name: chatbot-api
     build: .
@@ -159,9 +185,14 @@ services:
       PG_DATABASE: ${PG_DATABASE:-nexus_rag}
       PG_USER: ${PG_USER:-postgres}
       PG_PASSWORD: ${PG_PASSWORD:-postgres}
+      RERANKER_URL: http://reranker:8080
     ports:
       - "8000:8000"
     depends_on:
+      # service_started, not service_healthy: the API works without the
+      # reranker, so a slow model download must not block it.
+      reranker:
+        condition: service_started
       postgres:
         condition: service_healthy
       redis:
@@ -222,6 +253,7 @@ services:
 
   # Opt-in unit test runner. It uses the application image but does not start
   # or require external services because the unit suite mocks those boundaries.
+  # The integration tests (tests/integration) skip here: they need Docker.
   tests:
     build: .
     profiles: ["test"]
@@ -240,3 +272,4 @@ volumes:
   etcd_data:
   minio_data:
   milvus_data:
+  reranker_models:

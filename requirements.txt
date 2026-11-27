@@ -1,28 +1,43 @@
-# CPU-only torch build — sentence-transformers (reranker) pulls torch
-# transitively, and the default PyPI wheel bundles the full CUDA stack
-# (multi-GB) even though the reranker here only ever runs on CPU.
---extra-index-url https://download.pytorch.org/whl/cpu
-torch
+# Direct dependencies of the API and worker. Edit this file, then regenerate
+# requirements.lock and requirements-dev.lock (see README: Locked dependencies).
+# Install from requirements.lock, which also pins transitive packages.
+#
+# torch and sentence-transformers are NOT here: the cross-encoder runs in the
+# separate reranker service (requirements-reranker.txt, Dockerfile.reranker).
+# For in-process reranking during local development, also install
+# requirements-reranker.txt.
+#
+# Transitive dependencies are not locked. To lock them too, generate a lock
+# file (for example: uv pip compile requirements.txt -o requirements.lock).
 
+# Web API
 fastapi==0.139.0
-langchain==1.3.13
-langchain-core==1.4.9
-langchain-community==0.4.2
-langchain-text-splitters==1.1.2
-python-dotenv==1.2.2
-asyncpg==0.31.0
-langchain-openai==1.3.4
-slowapi>=0.1.9
-redis>=5.0.1
 uvicorn==0.51.0
-tiktoken>=0.7.0
-# RAG dependencies
+python-multipart==0.0.20
+slowapi==0.1.10
+httpx==0.28.1
+
+# Settings
+pydantic==2.10.4
+pydantic-settings==2.14.2
+
+# LLM / LangChain
+langchain==1.3.13
+langchain-core==1.6.0
+langchain-community==0.4.2
+langchain-openai==1.3.4
+langchain-text-splitters==1.1.2
+tiktoken==0.13.0
+
+# Storage
+asyncpg==0.31.0
 pymilvus==2.5.8
+minio==7.2.20
+
+# Document parsing
 pypdf==5.1.0
 python-docx==1.1.2
-python-multipart==0.0.20
-numpy>=1.26.0
-sentence-transformers==5.5.0
-# Queue and storage
-arq>=0.26
-minio>=7.2.0
+
+# Queue
+arq==0.28.0
+redis==5.3.1

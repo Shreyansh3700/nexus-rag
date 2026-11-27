@@ -8,7 +8,7 @@ os.environ.setdefault("JWT_SECRET", "test-jwt-secret")
 
 from arq import Retry
 
-from src.config.config import ARQ_MAX_TRIES
+from src.config.settings import settings
 from src.documents.errors import PermanentIngestionError
 from src.workers import tasks
 
@@ -78,11 +78,11 @@ class ProcessDocumentTests(unittest.IsolatedAsyncioTestCase):
     async def test_transient_error_on_last_attempt_marks_failed(self):
         db = FakeDb()
         with patch.object(tasks, "ingest_document", AsyncMock(side_effect=TimeoutError("openai"))):
-            await tasks.process_document(make_ctx(db, job_try=ARQ_MAX_TRIES), "doc-1")
+            await tasks.process_document(make_ctx(db, job_try=settings.arq_max_tries), "doc-1")
 
         status, reason, _ = db.statuses()[-1]
         self.assertEqual(status, "failed")
-        self.assertIn(f"Failed after {ARQ_MAX_TRIES} attempts", reason)
+        self.assertIn(f"Failed after {settings.arq_max_tries} attempts", reason)
 
     async def test_missing_document_is_skipped(self):
         db = FakeDb(row=None)

@@ -4,17 +4,13 @@ import base64
 import hashlib
 import hmac
 import json
-import os
 import secrets
 import time
 from typing import Any
 
 from fastapi import Depends, Header, HTTPException, Request, status
 
-from src.config.config import (
-    JWT_ACCESS_TOKEN_EXPIRE_MINUTES,
-    PASSWORD_HASH_ITERATIONS,
-)
+from src.config.settings import settings
 from src.logger import get_logger, set_user_id
 from src.schema.models import CurrentUser
 
@@ -26,15 +22,7 @@ PASSWORD_SALT_BYTES = 16
 
 
 def _get_jwt_secret() -> str:
-    jwt_secret = os.getenv("JWT_SECRET")
-    if jwt_secret:
-        return jwt_secret
-
-    legacy_secret = os.getenv("AUTH_API_KEY")
-    if legacy_secret:
-        return legacy_secret
-
-    raise RuntimeError("JWT_SECRET must be configured")
+    return settings.require_jwt_secret()
 
 
 def _b64url_encode(raw: bytes) -> str:
@@ -56,10 +44,10 @@ def hash_password(password: str) -> str:
         "sha256",
         password.encode("utf-8"),
         salt,
-        PASSWORD_HASH_ITERATIONS,
+        settings.password_hash_iterations,
     )
     return (
-        f"{PASSWORD_ALGORITHM}${PASSWORD_HASH_ITERATIONS}$"
+        f"{PASSWORD_ALGORITHM}${settings.password_hash_iterations}$"
         f"{_b64url_encode(salt)}${_b64url_encode(hash_bytes)}"
     )
 
@@ -90,7 +78,7 @@ def create_access_token(user_id: str, email: str) -> str:
         "sub": str(user_id),
         "email": email,
         "iat": now,
-        "exp": now + (JWT_ACCESS_TOKEN_EXPIRE_MINUTES * 60),
+        "exp": now + (settings.jwt_access_token_expire_minutes * 60),
     }
     header = {"alg": JWT_ALGORITHM, "typ": "JWT"}
     header_segment = _b64url_encode(_json_dumps(header))
@@ -203,7 +191,5 @@ async def get_current_user(
 
     resolved_user_id = str(row["id"])
     set_user_id(resolved_user_id)
-    logger.debug(
-        "Authenticated user loaded: user_id=%s email=%s", resolved_user_id, row["email"]
-    )
+    logger.debug("Authenticated user loaded: user_id=%s", resolved_user_id)
     return CurrentUser(id=resolved_user_id, email=row["email"])

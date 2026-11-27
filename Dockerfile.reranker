@@ -1,0 +1,23 @@
+# Reranker service image: torch (CPU) + sentence-transformers + a small
+# FastAPI app. The API and worker image (Dockerfile) does not contain torch.
+FROM python:3.11-slim
+
+WORKDIR /app
+
+COPY requirements-reranker.lock .
+RUN pip install --no-cache-dir --require-hashes -r requirements-reranker.lock
+
+# Only the modules the service imports.
+COPY src/__init__.py src/__init__.py
+COPY src/logger.py src/logger.py
+COPY src/reranker_service.py src/reranker_service.py
+COPY src/config/__init__.py src/config/settings.py src/config/
+COPY src/documents/__init__.py src/documents/reranker.py src/documents/
+
+# Hugging Face model cache; docker-compose mounts a volume here so the model
+# downloads once, not on every container start.
+ENV HF_HOME=/models
+
+EXPOSE 8080
+
+CMD ["uvicorn", "src.reranker_service:app", "--host", "0.0.0.0", "--port", "8080"]

@@ -1,0 +1,16 @@
+# Reranker service (src/reranker_service.py). Edit this file, then regenerate requirements-reranker.lock.
+# Also install this next to requirements.txt to run the reranker in the API
+# process during local development (RERANKER_URL unset).
+
+# CPU-only torch build. The default PyPI wheel bundles the full CUDA stack
+# (several GB) although the reranker runs on CPU.
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.12.0
+sentence-transformers==5.5.0
+transformers==5.11.0
+
+fastapi==0.139.0
+uvicorn==0.51.0
+httpx==0.28.1
+pydantic==2.10.4
+pydantic-settings==2.14.2

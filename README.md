@@ -62,6 +62,13 @@ nexus-rag is a FastAPI-based chatbot application that uses LangChain and OpenAI 
 - Transient errors (OpenAI, Postgres, Milvus, MinIO) set the status back to `queued` with a "Retrying…" reason and retry with exponential backoff (2s, 4s, …) up to `ARQ_MAX_TRIES` attempts. After the last attempt the document is `failed`.
 - Chunk IDs are `{document_id}:{chunk_index}`, and each run deletes the document's old chunks before writing, so retries are safe.
 
+**Reranker service:** the cross-encoder runs in its own process
+(`src/reranker_service.py`, image `Dockerfile.reranker`). The API sends the
+query and the candidate texts to `POST /rerank` and gets one score per text.
+The API image does not contain torch, and a slow rerank cannot block chat
+requests. If the service is down or slower than `RERANKER_TIMEOUT_SECONDS`,
+the API keeps the hybrid (RRF) order and still answers.
+
 ## Tech Stack
 
 - Python 3.11
@@ -90,6 +97,11 @@ Before running the project, make sure you have:
 
 Copy `.env.example` to `.env` and fill in the secrets — it documents every
 variable with the same defaults described below.
+
+All settings are declared once, with types and defaults, in
+`src/config/settings.py` (pydantic-settings). No other module reads the
+environment. A bad value (for example `MILVUS_PORT=abc`) stops the process at
+startup with an error that names the setting. Empty variables use the default.
 
 ```env
 OPENAI_API_KEY=your_openai_api_key
@@ -133,8 +145,14 @@ MILVUS_RRF_K=60
 MILVUS_TOKEN=root:Milvus
 RETRIEVAL_MAX_COSINE_DISTANCE=0.6
 
-# Cross-encoder reranking (local model, loaded on first retrieval)
+# Cross-encoder reranking
 RERANKER_ENABLED=true
+# Reranker service URL (docker-compose sets http://reranker:8080). Unset =
+# load the model in the API process (local development only; needs
+# requirements-reranker.txt).
+# RERANKER_URL=http://localhost:8080
+RERANKER_TIMEOUT_SECONDS=10
+RERANKER_MAX_CONCURRENCY=1
 RERANKER_MODEL=cross-encoder/ms-marco-MiniLM-L6-v2
 RERANKER_CANDIDATE_K=30
 RERANKER_TOP_K=5
@@ -216,8 +234,45 @@ venv\Scripts\activate      # Windows
 3. Install dependencies:
 
 ```bash
-pip install -r requirements.txt
+pip install --require-hashes -r requirements-dev.lock     # app + test tools
 ```
+
+The reranker needs torch, so it has its own lock. Install it only to run the
+reranker locally:
+
+```bash
+pip install --require-hashes -r requirements-reranker.lock
+# Either run it as a service (then set RERANKER_URL=http://localhost:8080):
+uvicorn src.reranker_service:app --port 8080
+# or leave RERANKER_URL unset to load the model inside the API process.
+```
+
+#### Locked dependencies
+
+There are two kinds of files:
+
+| File | Contents | Edit by hand? |
+|---|---|---|
+| `requirements.txt`, `requirements-dev.txt`, `requirements-reranker.txt` | Direct dependencies only, with exact pins | Yes |
+| `requirements.lock`, `requirements-dev.lock`, `requirements-reranker.lock` | Every package, including transitive ones, with SHA-256 hashes | No — generate them |
+
+Install from the `.lock` files. The Docker images do this too, so every build
+gets the same packages. The locks are universal: the same file works on
+Windows, macOS and the Linux images (Python 3.11).
+
+To add or upgrade a package, change the `.txt` file. Then generate the locks
+again with [uv](https://docs.astral.sh/uv/):
+
+```bash
+export UV_CUSTOM_COMPILE_COMMAND="see README: Locked dependencies"
+uv pip compile requirements.txt     --universal --python-version 3.11 --generate-hashes -o requirements.lock
+uv pip compile requirements-dev.txt --universal --python-version 3.11 --generate-hashes -o requirements-dev.lock
+uv pip compile requirements-reranker.txt --universal --python-version 3.11 --generate-hashes \
+  --emit-index-url --index-strategy unsafe-best-match -o requirements-reranker.lock
+```
+
+Commit the `.txt` and `.lock` files together. Add `--upgrade-package <name>`
+to move one package to its newest allowed version.
 
 4. Start the backend:
 
@@ -248,6 +303,34 @@ an OpenAI API call. Run them from the project root:
 
 ```bash
 python -m unittest discover -s tests -v
+```
+
+What they cover:
+
+- `tests/test_routes.py` — HTTP routes through FastAPI `TestClient`: auth
+  (signup, login, 401/409, and no email addresses in logs), upload (413 size
+  limit, 422 bad files, duplicate detection, enqueue failure), delete order
+  and status codes, and chat session ownership.
+- `tests/test_reranker.py` — reranker client (service and local mode), the
+  retriever fallback when the reranker fails, and the reranker service API.
+- `tests/test_settings.py` — settings parsing, validation and required values.
+- `tests/test_tasks.py`, `tests/test_chat_turn.py`, `tests/test_documents.py`,
+  `tests/test_retriever.py`, `tests/test_auth.py`, `tests/test_rate_limit.py`
+  — ingestion lifecycle, chat turns, chunking, citations, auth, rate limits.
+
+`tests/integration/` runs the real SQL (schema bootstrap, idempotent chunk
+writes, dedupe lookup, cascade delete) against PostgreSQL 16 in Docker via
+testcontainers. These tests skip when Docker is not running:
+
+```bash
+pip install --require-hashes -r requirements-dev.lock
+python -m unittest discover -s tests/integration -t . -v
+```
+
+Frontend tests (vitest) cover the SSE parser and the API client:
+
+```bash
+cd frontend && npm test
 ```
 
 Or run the same suite in the application container image:
@@ -353,7 +436,7 @@ curl -H "Authorization: Bearer $TOKEN" \
 
 ## Docker
 
-Start the full stack (PostgreSQL + Redis + Milvus + etcd + MinIO + FastAPI + ARQ worker + React frontend) with:
+Start the full stack (PostgreSQL + Redis + Milvus + etcd + MinIO + FastAPI + ARQ worker + reranker service + React frontend) with:
 
 ```bash
 docker compose up -d --build
@@ -390,9 +473,13 @@ docker compose logs -f worker
 - `MILVUS_TOP_K` controls how many document chunks are retrieved per query (default 5).
 - `RETRIEVAL_MAX_COSINE_DISTANCE` (default 0.6) drops dense-search candidates whose cosine distance to the query exceeds it, before ranking/reranking — a relevance floor so weakly-matching chunks aren't treated as authoritative context. 0.6 is a starting point for `text-embedding-3-small`; tune it against your own documents (retrieval scores are visible in the `SOURCES-TRACE`/`Running hybrid retrieval` debug logs).
 - When `RERANKER_ENABLED=true`, the app retrieves up to `RERANKER_CANDIDATE_K`
-  hybrid-search candidates, uses a local cross-encoder to select the best
-  `RERANKER_TOP_K`, and sends only those chunks to the LLM. The model is
-  downloaded when it is first used, so the first RAG request may take longer.
+  hybrid-search candidates, asks the reranker service to score them, and sends
+  only the best `RERANKER_TOP_K` chunks to the LLM. In Docker the model
+  downloads on the first start of the `reranker` service and is cached in the
+  `reranker_models` volume.
+- Logs do not contain email addresses, session titles or retrieved sources.
+  Per-request retrieval details (`SOURCES-TRACE`) are at DEBUG level; set
+  `LOG_LEVEL=DEBUG` to see them.
 - The streaming endpoint falls back to the final end-of-stream answer when a model emits empty chunks.
 - Uploading a file whose bytes already exist (and did not fail) in the same session returns the existing document with `"duplicate": true` instead of processing it again.
 - Deleting a document removes its Milvus vectors first. If that fails, the API returns `502` and keeps the document so the delete can be retried — deleted documents never keep answering questions.

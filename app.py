@@ -1,5 +1,3 @@
-import os
-
 import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -8,6 +6,7 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
 
 from src.config.config import set_environment
+from src.config.settings import settings
 from src.logger import configure_logging, get_logger
 from src.rate_limit import limiter
 from src.routes import auth_router, chat_router, documents_router, sessions_router
@@ -28,10 +27,9 @@ app.add_middleware(SlowAPIMiddleware)
 
 # Allows the React SPA (served from a different origin/port than the API)
 # to call these endpoints from the browser, including the Authorization header.
-frontend_origin = os.getenv("FRONTEND_ORIGIN", "http://localhost:5173")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[frontend_origin],
+    allow_origins=[settings.frontend_origin],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

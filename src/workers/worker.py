@@ -12,20 +12,13 @@ The worker will:
 - Process jobs with the configured concurrency (ARQ_MAX_JOBS)
 - Gracefully shut down on SIGTERM/SIGINT
 """
-import os
 
 import asyncpg
 from arq import run_worker
-from pymilvus import MilvusClient
 
 from src.config.arq_config import WorkerSettings
-from src.config.config import (
-    MILVUS_COLLECTION_NAME,
-    MILVUS_HOST,
-    MILVUS_PORT,
-    MILVUS_TOKEN,
-    required_setting,
-)
+from src.config.config import create_milvus_client
+from src.config.settings import settings
 from src.logger import configure_logging, get_logger
 from src.storage.minio_client import get_minio_client
 
@@ -51,28 +44,17 @@ async def startup(ctx: dict) -> None:
     # Postgres connection pool
     # ------------------------------------------------------------------ #
     logger.debug("Creating Postgres connection pool")
-    # Same required settings as the API (src/config/config.py), so a missing
-    # value fails the worker at startup instead of connecting somewhere else.
-    ctx["db"] = await asyncpg.create_pool(
-        host=required_setting("PG_HOST"),
-        port=int(required_setting("PG_PORT")),
-        database=required_setting("PG_DATABASE"),
-        user=required_setting("PG_USER"),
-        password=required_setting("PG_PASSWORD"),
-        min_size=1,
-        max_size=int(os.getenv("DB_POOL_SIZE", "10")),
-    )
+    # Same required settings as the API, so a missing value fails the worker
+    # at startup instead of connecting somewhere else.
+    ctx["db"] = await asyncpg.create_pool(**settings.postgres_pool_kwargs())
     logger.info("Postgres pool created")
 
     # ------------------------------------------------------------------ #
     # Milvus client
     # ------------------------------------------------------------------ #
-    logger.debug("Connecting to Milvus: host=%s port=%s", MILVUS_HOST, MILVUS_PORT)
-    ctx["milvus"] = MilvusClient(
-        uri=f"http://{MILVUS_HOST}:{MILVUS_PORT}",
-        token=MILVUS_TOKEN,
-    )
-    logger.info("Milvus client initialized: collection=%s", MILVUS_COLLECTION_NAME)
+    logger.debug("Connecting to Milvus: uri=%s", settings.milvus_uri)
+    ctx["milvus"] = create_milvus_client()
+    logger.info("Milvus client initialized: collection=%s", settings.milvus_collection_name)
 
     ctx["minio"] = get_minio_client()
 

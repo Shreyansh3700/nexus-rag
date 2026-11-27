@@ -16,7 +16,7 @@ import time
 
 from arq import Retry
 
-from src.config.config import ARQ_MAX_TRIES, MILVUS_COLLECTION_NAME, MINIO_BUCKET
+from src.config.settings import settings
 from src.documents.errors import PermanentIngestionError
 from src.documents.filters import document_filter
 from src.documents.ingestor import ingest_document
@@ -54,7 +54,7 @@ async def process_document(ctx: dict, document_id: str) -> None:
         "ARQ task started: document_id=%s attempt=%s/%s",
         document_id,
         job_try,
-        ARQ_MAX_TRIES,
+        settings.arq_max_tries,
     )
 
     async with db.acquire() as conn:
@@ -82,7 +82,7 @@ async def process_document(ctx: dict, document_id: str) -> None:
 
         try:
             content = await asyncio.to_thread(
-                minio_client.download_file, MINIO_BUCKET, row["object_name"]
+                minio_client.download_file, settings.minio_bucket, row["object_name"]
             )
             count = await ingest_document(
                 document_id=document_id,
@@ -102,21 +102,21 @@ async def process_document(ctx: dict, document_id: str) -> None:
             await _set_status(db, document_id, "failed", reason=str(exc))
             return
         except Exception as exc:
-            if job_try < ARQ_MAX_TRIES:
+            if job_try < settings.arq_max_tries:
                 delay = retry_delay_seconds(job_try)
                 logger.warning(
                     "Transient ingestion failure, retrying in %ss: document_id=%s attempt=%s/%s",
                     delay,
                     document_id,
                     job_try,
-                    ARQ_MAX_TRIES,
+                    settings.arq_max_tries,
                     exc_info=True,
                 )
                 await _set_status(
                     db,
                     document_id,
                     "queued",
-                    reason=f"Retrying after attempt {job_try}/{ARQ_MAX_TRIES}: {exc}",
+                    reason=f"Retrying after attempt {job_try}/{settings.arq_max_tries}: {exc}",
                 )
                 raise Retry(defer=delay) from exc
 
@@ -146,7 +146,7 @@ async def process_document(ctx: dict, document_id: str) -> None:
             )
             await asyncio.to_thread(
                 milvus_client.delete,
-                collection_name=MILVUS_COLLECTION_NAME,
+                collection_name=settings.milvus_collection_name,
                 filter=document_filter(document_id),
             )
             return
