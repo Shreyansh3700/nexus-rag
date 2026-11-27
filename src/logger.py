@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import logging
-import os
 from contextlib import contextmanager
 from contextvars import ContextVar
 from datetime import datetime, timezone, timedelta
+
+from src.config.settings import settings
 
 IST = timezone(timedelta(hours=5, minutes=30))
 _user_id: ContextVar[str] = ContextVar("user_id", default="-")
@@ -29,7 +30,7 @@ def configure_logging(level: str | int | None = None) -> None:
     if _configured:
         return
 
-    resolved_level = level or os.getenv("LOG_LEVEL", "INFO")
+    resolved_level = level or settings.log_level.upper()
     handler = logging.StreamHandler()
     handler.setFormatter(ISTFormatter("%(asctime)s | %(levelname)s | %(user_id)s | %(message)s"))
     handler.addFilter(UserIdFilter())

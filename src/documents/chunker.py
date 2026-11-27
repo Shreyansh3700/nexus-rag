@@ -62,3 +62,4 @@ def chunk_units(units) -> list[DocumentChunk]:
         round(sum(len(chunk.text) for chunk in chunks) / len(chunks)) if chunks else 0,
     )
     return chunks
+

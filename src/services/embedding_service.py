@@ -9,26 +9,25 @@ Only the first entry is required (defaults to the previous single-model
 behavior).
 
 IMPORTANT: every configured model must produce vectors of the same
-dimensionality as EMBEDDING_DIM in src/config/config.py (the Milvus schema is
+dimensionality as EMBEDDING_DIM (src/config/settings.py) (the Milvus schema is
 fixed to that dimension). Mixing embedding models with different output
 dimensions will corrupt retrieval — this service does not validate that for
 you. Switching dimensions requires recreating the Milvus collection (see the
 "Milvus migration" section in the README) and setting EMBEDDING_DIM to match.
 """
-import os
-
 from langchain_core.embeddings import Embeddings
 from langchain_openai import OpenAIEmbeddings
 
 from src.logger import get_logger
-from src.services.provider_chain import parse_provider_chain, required_env
+from src.config.settings import settings
+from src.services.provider_chain import parse_provider_chain
 
 logger = get_logger(__name__)
 
 
 def _build_embeddings(provider: str, model: str) -> Embeddings:
     if provider == "openai":
-        return OpenAIEmbeddings(model=model, api_key=required_env("OPENAI_API_KEY"))
+        return OpenAIEmbeddings(model=model, api_key=settings.require_openai_api_key())
     raise ValueError(f"Unknown embedding provider: {provider!r}. Supported: openai.")
 
 
@@ -82,10 +81,8 @@ class EmbeddingService(Embeddings):
 
     @classmethod
     def from_env(cls) -> "EmbeddingService":
-        default_model = os.getenv("EMBEDDING_MODEL", "text-embedding-3-small")
-        chain = parse_provider_chain(
-            "EMBEDDING_FALLBACK_CHAIN", f"openai:{default_model}"
-        )
+        raw = settings.embedding_fallback_chain or f"openai:{settings.embedding_model}"
+        chain = parse_provider_chain(raw, "EMBEDDING_FALLBACK_CHAIN")
         return cls(chain)
 
 

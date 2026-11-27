@@ -18,7 +18,7 @@ import asyncio
 
 from pymilvus import MilvusClient
 
-from src.config.config import MILVUS_COLLECTION_NAME
+from src.config.settings import settings
 from src.documents.chunker import DocumentChunk
 from src.documents.filters import document_filter
 from src.logger import get_logger
@@ -161,12 +161,12 @@ async def embed_and_store(
         # Remove vectors from any earlier, partial attempt, then upsert.
         await asyncio.to_thread(
             milvus_client.delete,
-            collection_name=MILVUS_COLLECTION_NAME,
+            collection_name=settings.milvus_collection_name,
             filter=document_filter(document_id),
         )
         await asyncio.to_thread(
             milvus_client.upsert,
-            collection_name=MILVUS_COLLECTION_NAME,
+            collection_name=settings.milvus_collection_name,
             data=milvus_rows,
         )
         logger.info(

@@ -9,16 +9,7 @@ from dataclasses import dataclass
 
 from pymilvus import AnnSearchRequest, MilvusClient, RRFRanker
 
-from src.config.config import (
-    MILVUS_COLLECTION_NAME,
-    MILVUS_HYBRID_CANDIDATE_K,
-    MILVUS_RRF_K,
-    MILVUS_TOP_K,
-    RERANKER_CANDIDATE_K,
-    RERANKER_ENABLED,
-    RERANKER_TOP_K,
-    RETRIEVAL_MAX_COSINE_DISTANCE,
-)
+from src.config.settings import settings
 from src.documents.filters import milvus_filter_value
 from src.documents.reranker import rerank_chunks
 from src.logger import get_logger
@@ -102,7 +93,7 @@ def _scope_filter(user_id: str, session_id: str) -> str:
 
 def _has_chunks(milvus_client: MilvusClient, filter_expr: str) -> bool:
     rows = milvus_client.query(
-        collection_name=MILVUS_COLLECTION_NAME,
+        collection_name=settings.milvus_collection_name,
         filter=filter_expr,
         output_fields=["chunk_id"],
         limit=1,
@@ -117,12 +108,12 @@ def _hybrid_search(
     filter_expr: str,
     top_k: int,
 ) -> list[dict]:
-    candidate_k = max(top_k, MILVUS_HYBRID_CANDIDATE_K)
+    candidate_k = max(top_k, settings.milvus_hybrid_candidate_k)
     # radius/range_filter is Milvus's server-side range search: for COSINE
     # (larger score = more similar), only candidates with
     # radius < similarity <= range_filter survive the ANN search on this
     # leg, before RRF fusion ever sees them.
-    min_similarity = 1.0 - RETRIEVAL_MAX_COSINE_DISTANCE
+    min_similarity = 1.0 - settings.retrieval_max_cosine_distance
     dense_request = AnnSearchRequest(
         data=[query_vector],
         anns_field="dense_vector",
@@ -141,9 +132,9 @@ def _hybrid_search(
         expr=filter_expr,
     )
     results = milvus_client.hybrid_search(
-        collection_name=MILVUS_COLLECTION_NAME,
+        collection_name=settings.milvus_collection_name,
         reqs=[dense_request, sparse_request],
-        ranker=RRFRanker(k=MILVUS_RRF_K),
+        ranker=RRFRanker(k=settings.milvus_rrf_k),
         limit=top_k,
         output_fields=["text", "filename", "document_id", "chunk_index", "page"],
     )
@@ -165,16 +156,22 @@ async def retrieve_context(
     session_id: str,
     user_id: str,
     milvus_client: MilvusClient,
-    top_k: int = MILVUS_TOP_K,
+    top_k: int | None = None,
 ) -> RetrievalResult:
-    """Retrieve hybrid-ranked context from the active session's documents only."""
+    """Retrieve hybrid-ranked context from the active session's documents only.
+
+    *top_k* defaults to MILVUS_TOP_K.
+    """
     if not query.strip():
         return RetrievalResult(context="", sources=[])
+
+    top_k = top_k or settings.milvus_top_k
+    rerank = settings.reranker_enabled
 
     filter_expr = _scope_filter(user_id, session_id)
     try:
         if not await asyncio.to_thread(_has_chunks, milvus_client, filter_expr):
-            logger.info(
+            logger.debug(
                 "SOURCES-TRACE: no indexed chunks for this session — sources will be empty: "
                 "user_id=%s session_id=%s",
                 user_id,
@@ -187,14 +184,14 @@ async def retrieve_context(
             "rerank_enabled=%s max_cosine_distance=%s",
             user_id,
             session_id,
-            RERANKER_CANDIDATE_K
-            if RERANKER_ENABLED
-            else max(top_k, MILVUS_HYBRID_CANDIDATE_K),
-            RERANKER_ENABLED,
-            RETRIEVAL_MAX_COSINE_DISTANCE,
+            settings.reranker_candidate_k
+            if rerank
+            else max(top_k, settings.milvus_hybrid_candidate_k),
+            rerank,
+            settings.retrieval_max_cosine_distance,
         )
         query_vector = await embedding_service.aembed_query(query)
-        retrieval_k = RERANKER_CANDIDATE_K if RERANKER_ENABLED else top_k
+        retrieval_k = settings.reranker_candidate_k if rerank else top_k
         chunks = await asyncio.to_thread(
             _hybrid_search,
             milvus_client=milvus_client,
@@ -203,13 +200,15 @@ async def retrieve_context(
             filter_expr=filter_expr,
             top_k=retrieval_k,
         )
-        if RERANKER_ENABLED:
+        reranked = False
+        if rerank:
             try:
                 chunks = await rerank_chunks(
                     query=query,
                     chunks=chunks,
-                    top_k=min(RERANKER_TOP_K, top_k),
+                    top_k=min(settings.reranker_top_k or top_k, top_k),
                 )
+                reranked = True
             except Exception:
                 logger.warning(
                     "Reranking failed; using hybrid-ranked candidates: user_id=%s session_id=%s",
@@ -223,7 +222,7 @@ async def retrieve_context(
             user_id,
             session_id,
             len(chunks),
-            RERANKER_ENABLED,
+            reranked,
         )
         sources = [
             {
@@ -234,7 +233,7 @@ async def retrieve_context(
             }
             for index, chunk in enumerate(chunks, start=1)
         ]
-        logger.info(
+        logger.debug(
             "SOURCES-TRACE: retrieval built sources: user_id=%s session_id=%s sources_count=%s sources=%s",
             user_id,
             session_id,

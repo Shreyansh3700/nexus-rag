@@ -16,7 +16,7 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 
 async def _create_user(email: str, password: str, db) -> AuthResponse:
     normalized_email = email.strip().lower()
-    logger.debug("Signup request received for email=%s", normalized_email)
+    logger.debug("Signup request received")
     if not normalized_email:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -39,14 +39,14 @@ async def _create_user(email: str, password: str, db) -> AuthResponse:
                 password_hash,
             )
         except asyncpg.exceptions.UniqueViolationError as error:
-            logger.info("Signup rejected because email already exists: email=%s", normalized_email)
+            logger.info("Signup rejected because the email is already registered")
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="Email is already registered",
             ) from error
 
     token = create_access_token(user_id=user_id, email=normalized_email)
-    logger.info("User signed up successfully: user_id=%s email=%s", user_id, normalized_email)
+    logger.info("User signed up successfully: user_id=%s", user_id)
     return AuthResponse(
         access_token=token,
         token_type="bearer",
@@ -73,7 +73,7 @@ async def signup(request: Request, body: SignupRequest, db=Depends(get_db)) -> A
 @limiter.limit("10/minute")
 async def login(request: Request, body: LoginRequest, db=Depends(get_db)) -> AuthResponse:
     normalized_email = body.email.strip().lower()
-    logger.debug("Login request received for email=%s", normalized_email)
+    logger.debug("Login request received")
     try:
         async with db.acquire() as connection:
             row = await connection.fetchrow(
@@ -86,7 +86,9 @@ async def login(request: Request, body: LoginRequest, db=Depends(get_db)) -> Aut
             )
 
         if row is None or not verify_password(body.password, row["password_hash"]):
-            logger.warning("Login failed for email=%s", normalized_email)
+            # No email here: logs must not hold personal data. The rate
+            # limiter, not the logs, protects against password guessing.
+            logger.warning("Login failed: unknown email or wrong password")
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Invalid email or password",
@@ -95,7 +97,7 @@ async def login(request: Request, body: LoginRequest, db=Depends(get_db)) -> Aut
         user_id = str(row["id"])
         set_user_id(user_id)
         token = create_access_token(user_id=user_id, email=row["email"])
-        logger.info("User logged in successfully: user_id=%s email=%s", user_id, row["email"])
+        logger.info("User logged in successfully: user_id=%s", user_id)
         return AuthResponse(
             access_token=token,
             token_type="bearer",

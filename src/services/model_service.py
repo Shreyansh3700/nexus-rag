@@ -13,28 +13,24 @@ failure after tokens have already been yielded to the client cannot
 retroactively fall back — only a failure before the first token is emitted
 triggers the next model in the chain.
 """
-import os
-
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_openai import ChatOpenAI
 
 from src.logger import get_logger
-from src.services.provider_chain import parse_provider_chain, required_env
+from src.config.settings import settings
+from src.services.provider_chain import parse_provider_chain
 
 logger = get_logger(__name__)
-
-LLM_TEMPERATURE = float(os.getenv("LLM_TEMPERATURE", "0.6"))
-LLM_MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS", "6000"))
 
 
 def _build_chat_model(provider: str, model: str) -> BaseChatModel:
     if provider == "openai":
         return ChatOpenAI(
             model=model,
-            api_key=required_env("OPENAI_API_KEY"),
-            temperature=LLM_TEMPERATURE,
+            api_key=settings.require_openai_api_key(),
+            temperature=settings.llm_temperature,
             max_retries=3,
-            max_tokens=LLM_MAX_TOKENS,
+            max_tokens=settings.llm_max_tokens,
         )
     raise ValueError(f"Unknown chat model provider: {provider!r}. Supported: openai.")
 
@@ -60,6 +56,6 @@ class ModelService:
 
     @classmethod
     def from_env(cls) -> "ModelService":
-        default_model = os.getenv("LLM_MODEL", "gpt-4o-mini")
-        chain = parse_provider_chain("LLM_FALLBACK_CHAIN", f"openai:{default_model}")
+        raw = settings.llm_fallback_chain or f"openai:{settings.llm_model}"
+        chain = parse_provider_chain(raw, "LLM_FALLBACK_CHAIN")
         return cls(chain)

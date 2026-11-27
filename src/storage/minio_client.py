@@ -5,12 +5,12 @@ The worker downloads files from MinIO during ingestion, then the original
 file remains available for re-processing or auditing.
 """
 import io
-import os
 from functools import lru_cache
 
 from minio import Minio
 from minio.error import S3Error
 
+from src.config.settings import settings
 from src.logger import get_logger
 
 logger = get_logger(__name__)
@@ -162,26 +162,11 @@ class MinioClient:
 
 @lru_cache(maxsize=1)
 def get_minio_client() -> MinioClient:
-    """Get or create the singleton MinIO client instance.
-
-    Reads configuration from environment variables:
-    - MINIO_ENDPOINT (default: localhost:9000)
-    - MINIO_ACCESS_KEY (default: minioadmin)
-    - MINIO_SECRET_KEY (default: minioadmin)
-    - MINIO_SECURE (default: false)
-
-    Returns:
-        Configured MinioClient instance
-    """
-    endpoint = os.getenv("MINIO_ENDPOINT", "localhost:9000")
-    access_key = os.getenv("MINIO_ACCESS_KEY", "minioadmin")
-    secret_key = os.getenv("MINIO_SECRET_KEY", "minioadmin")
-    secure = os.getenv("MINIO_SECURE", "false").lower() in {"true", "1", "yes"}
-
-    logger.debug("Creating MinIO client singleton: endpoint=%s", endpoint)
+    """Get or create the singleton MinIO client (MINIO_* settings)."""
+    logger.debug("Creating MinIO client singleton: endpoint=%s", settings.minio_endpoint)
     return MinioClient(
-        endpoint=endpoint,
-        access_key=access_key,
-        secret_key=secret_key,
-        secure=secure,
+        endpoint=settings.minio_endpoint,
+        access_key=settings.minio_access_key,
+        secret_key=settings.minio_secret_key.get_secret_value(),
+        secure=settings.minio_secure,
     )

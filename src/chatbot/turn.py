@@ -65,7 +65,8 @@ async def _generate_title(title_chain, session_id: str, user_query: str) -> str 
         )
         return None
     title = str(getattr(result, "content", result)).strip() or DEFAULT_TITLE
-    logger.info("Generated title: session_id=%s title=%r", session_id, title)
+    # The title is built from the user's message, so log only its length.
+    logger.debug("Generated title: session_id=%s title_len=%s", session_id, len(title))
     return title
 
 
@@ -88,7 +89,7 @@ async def _retrieve(
         )
         return "", []
 
-    logger.info(
+    logger.debug(
         "SOURCES-TRACE: after retrieve_context: session_id=%s context_chars=%s raw_sources_count=%s",
         session_id,
         len(retrieval.context),
@@ -157,7 +158,7 @@ async def prepare_turn(
 def select_cited_sources(turn: PreparedTurn, answer: str) -> list[dict]:
     """Keep only the retrieved sources the answer cites (see cited_sources)."""
     sources = cited_sources(answer, turn.sources)
-    logger.info(
+    logger.debug(
         "SOURCES-TRACE: after cited_sources filter: session_id=%s raw_sources_count=%s "
         "cited_sources_count=%s",
         turn.session_id,

@@ -1,0 +1,7 @@
+# Local development and tests. Edit this file, then regenerate requirements-dev.lock (see README).
+-r requirements.txt
+
+ruff==0.15.19
+# Integration tests (tests/integration) start a real Postgres in Docker.
+# They skip when Docker or this package is not available.
+testcontainers[postgres]==4.15.0

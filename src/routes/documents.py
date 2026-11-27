@@ -19,7 +19,7 @@ from typing import List
 from fastapi import APIRouter, Depends, Form, HTTPException, Request, UploadFile, status
 
 from src.auth import get_current_user
-from src.config.config import MAX_UPLOAD_BYTES, MILVUS_COLLECTION_NAME, MINIO_BUCKET
+from src.config.settings import settings
 from src.documents.filters import document_filter
 from src.logger import get_logger
 from src.rate_limit import get_user_or_ip, limiter
@@ -78,7 +78,7 @@ async def _prepare_uploads(files: List[UploadFile]) -> list[_PreparedUpload]:
     for upload in files:
         filename = upload.filename or "untitled"
         ext = _check_extension(filename)
-        content = await _read_limited(upload, filename, MAX_UPLOAD_BYTES)
+        content = await _read_limited(upload, filename, settings.max_upload_bytes)
         if not content:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -178,7 +178,7 @@ async def upload_documents(
         try:
             await asyncio.to_thread(
                 minio_client.upload_file,
-                bucket=MINIO_BUCKET,
+                bucket=settings.minio_bucket,
                 object_name=object_name,
                 data=item.content,
             )
@@ -218,7 +218,7 @@ async def upload_documents(
                 current_user.id,
             )
             try:
-                await asyncio.to_thread(minio_client.delete_file, MINIO_BUCKET, object_name)
+                await asyncio.to_thread(minio_client.delete_file, settings.minio_bucket, object_name)
             except Exception:
                 logger.warning(
                     "Failed to clean up MinIO object after metadata insert failure: %s",
@@ -406,7 +406,7 @@ async def delete_document(
     try:
         await asyncio.to_thread(
             milvus.delete,
-            collection_name=MILVUS_COLLECTION_NAME,
+            collection_name=settings.milvus_collection_name,
             filter=document_filter(document_id),
         )
     except Exception as exc:
@@ -436,7 +436,7 @@ async def delete_document(
     if object_name:
         try:
             await asyncio.to_thread(
-                get_minio_client().delete_file, MINIO_BUCKET, object_name
+                get_minio_client().delete_file, settings.minio_bucket, object_name
             )
         except Exception:
             logger.warning(
